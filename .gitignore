@@ -3,3 +3,5 @@ Test
 busybox*
 *.cpio.gz
 linux-*
+lab2/shell
+lab2/get_ps_info

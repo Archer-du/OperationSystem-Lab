@@ -127,7 +127,7 @@ int process_redirect(int argc, char** argv, int *fd) {
         int tfd;
         if(strcmp(argv[i], ">") == 0) {
             //打开输出文件从头写入
-            tfd = open(argv[i+1], O_WRONLY | O_CREAT);
+            tfd = open(argv[i+1], O_WRONLY | O_CREAT, 0664);
             if(tfd < 0) {
                 printf("open '%s' error: %s\n", argv[i+1], strerror(errno));
             } else {
@@ -137,7 +137,7 @@ int process_redirect(int argc, char** argv, int *fd) {
             i += 2;
         } else if(strcmp(argv[i], ">>") == 0) {
             //打开输出文件追加写入
-			tfd = open(argv[i+1], O_WRONLY | O_CREAT | O_APPEND);
+			tfd = open(argv[i+1], O_WRONLY | O_CREAT | O_APPEND, 0664);
             if(tfd < 0) {
                 printf("open '%s' error: %s\n", argv[i+1], strerror(errno));
             } else {
@@ -178,7 +178,7 @@ int execute(int argc, char** argv) {
     fd[WRITE_END] = STDOUT_FILENO;
     // 处理重定向符，如果不做本部分内容，请注释掉process_redirect的调用
     argc = process_redirect(argc, argv, fd);
-    if(exec_builtin(argc, argv, fd) == 0) {
+    if(exec_builtin(argc, argv, fd) == 0) {//
         exit(0);
     }
     // 将标准输入输出STDIN_FILENO和STDOUT_FILENO修改为fd对应的文件
