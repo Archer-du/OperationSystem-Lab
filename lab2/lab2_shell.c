@@ -65,13 +65,13 @@ int exec_builtin(int argc, char**argv, int *fd) {
 		if(argc >= 2){
 			if(chdir(argv[1]) != 0) {
 				perror("cd");
-				return -1;
+				return 1;
 			}
 			else return 0;
 		}
 		else{
             //prompt
-			return -1;
+			return 1;
 		}
     }
 	else if (strcmp(argv[0], "exit") == 0){
@@ -84,20 +84,20 @@ int exec_builtin(int argc, char**argv, int *fd) {
 		if(argc >= 3){
 			if(kill(atoi(argv[1]), atoi(argv[2])) != 0){
                 perror("kill");
-                return -1;
+                return 1;
             }
             else return 0;
 		}
 		else if(argc == 2){
 			if(kill(atoi(argv[1]), 9) != 0){
                 perror("kill");
-                return -1;
+                return 1;
             }
             else return 0;
 		}
 		else{
             //prompt
-			return -1;
+			return 1;
 		}
 	}
 	else {
@@ -178,15 +178,16 @@ int execute(int argc, char** argv) {
     fd[WRITE_END] = STDOUT_FILENO;
     // 处理重定向符，如果不做本部分内容，请注释掉process_redirect的调用
     argc = process_redirect(argc, argv, fd);
-    if(exec_builtin(argc, argv, fd) == 0) {//
+    if(exec_builtin(argc, argv, fd) >= 0) {//是内置指令，但可能执行失败
         exit(0);
     }
+    //不是内置指令
     // 将标准输入输出STDIN_FILENO和STDOUT_FILENO修改为fd对应的文件
     dup2(fd[READ_END], STDIN_FILENO);
     dup2(fd[WRITE_END], STDOUT_FILENO);
     // 运行命令与结束
     execvp(argv[0], argv);
-    perror("execvp");
+    perror(argv[0]);
     exit(1);
 }
 
@@ -219,7 +220,7 @@ int main() {
                 // 处理参数，分出命令名和参数
                 argc = split_string(commands[0], " ", argv);
                 // 在没有管道时，内建命令直接在主进程中完成，外部命令通过创建子进程完成
-                if(exec_builtin(argc, argv, fd) == 0) {
+                if(exec_builtin(argc, argv, fd) >= 0) {
                     continue;
                 }
                 // 创建子进程，运行命令，等待命令运行结束
