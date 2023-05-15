@@ -70,7 +70,7 @@ int exec_builtin(int argc, char**argv, int *fd) {
 			else return 0;
 		}
 		else{
-            //prompt
+            printf("cd: do not have enough arguments\n");
 			return 1;
 		}
     }
@@ -96,7 +96,7 @@ int exec_builtin(int argc, char**argv, int *fd) {
             else return 0;
 		}
 		else{
-            //prompt
+            printf("kill: do not have enough arguments\n");
 			return 1;
 		}
 	}
