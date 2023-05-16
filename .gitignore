@@ -1,5 +1,5 @@
 Test
-*.sh
+lab2/*.sh
 busybox*
 *.cpio.gz
 linux-*

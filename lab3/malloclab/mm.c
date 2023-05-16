@@ -128,7 +128,7 @@ void *mm_malloc(size_t size)
     newsize = MAX(MIN_BLK_SIZE, ALIGN((size + WSIZE))); /*size+WSIZE(head_len)*/
     //size + 2(块头块尾)
     /* newsize = MAX(MIN_BLK_SIZE, (ALIGN(size) + DSIZE));*/
-    if ((bp = find_fit_first(newsize)) != NULL)
+    if ((bp = find_fit_best(newsize)) != NULL)
     {
         place(bp, newsize);
         return bp;
@@ -166,7 +166,8 @@ void mm_free(void *bp)
 
     coalesce(bp);
 
-    user_malloc_size -= size - 2;
+    user_malloc_size -= size - 2 * WSIZE;
+    //printf("\n user_size: %u\n", user_malloc_size);
 
 }
 
@@ -205,6 +206,7 @@ static void *extend_heap(size_t words)
         return NULL;
     
     heap_size += size;//
+    //printf("\nheap_size: %u\n", heap_size);
 
     PUT(HDRP(bp), PACK(size, prev_alloc, 0)); /*last free block*/
     PUT(FTRP(bp), PACK(size, prev_alloc, 0));//块size包括块头块尾
@@ -219,6 +221,10 @@ static void *coalesce(void *bp)
     /*add_to_free_list(bp);*/
     size_t prev_alloc = GET_PREV_ALLOC(HDRP(bp));
     size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
+    char *prev_bp;
+    char *next_bp;
+    size_t prev_size;
+    size_t next_size;
     size_t size = GET_SIZE(HDRP(bp));
     /*
         TODO
@@ -232,31 +238,37 @@ static void *coalesce(void *bp)
     }
     else if (prev_alloc && !next_alloc) /*前块已分配，后块空闲*/
     {
-        char *next_bp = NEXT_BLKP(bp);
+        next_bp = NEXT_BLKP(bp);
+        next_size = GET_SIZE(HDRP(next_bp));
         delete_from_free_list(next_bp);
-        PUT(HDRP(bp), PACK(GET_SIZE(bp) + GET_SIZE(next_bp), 1, 0));
-        PUT(FTRP(next_bp), PACK(GET_SIZE(bp) + GET_SIZE(next_bp), 1, 0));
+        PUT(HDRP(bp), PACK(size + next_size, 1, 0));
+        PUT(FTRP(next_bp), PACK(size + next_size, 1, 0));
         add_to_free_list(bp);
     }
     else if (!prev_alloc && next_alloc) /*前块空闲，后块已分配*/
     {
-        char *prev_bp = PREV_BLKP(bp);
+        prev_bp = PREV_BLKP(bp);
+        prev_size = GET_SIZE(HDRP(prev_bp));
         delete_from_free_list(prev_bp);
         size_t prev_prev_alloc = GET_PREV_ALLOC(HDRP(prev_bp));
-        PUT(HDRP(prev_bp), PACK(GET_SIZE(prev_bp) + GET_SIZE(bp), prev_prev_alloc, 0));
-        PUT(FTRP(prev_bp), PACK(GET_SIZE(prev_bp) + GET_SIZE(bp), prev_prev_alloc, 0));
+        PUT(HDRP(prev_bp), PACK(prev_size + size, prev_prev_alloc, 0));
+        PUT(FTRP(prev_bp), PACK(prev_size + size, prev_prev_alloc, 0));//重点错误！！
         add_to_free_list(prev_bp);
+        bp = prev_bp;
     }
     else /*前后都是空闲块*/
     {
-        char *next_bp = NEXT_BLKP(bp);
-        char *prev_bp = PREV_BLKP(bp);
+        next_bp = NEXT_BLKP(bp);
+        prev_bp = PREV_BLKP(bp);
+        next_size = GET_SIZE(HDRP(next_bp));
+        prev_size = GET_SIZE(HDRP(prev_bp));
         delete_from_free_list(next_bp);
         delete_from_free_list(prev_bp);
         size_t prev_prev_alloc = GET_PREV_ALLOC(HDRP(prev_bp));
-        PUT(HDRP(prev_bp), PACK(GET_SIZE(prev_bp) + GET_SIZE(bp) + GET_SIZE(next_bp), prev_prev_alloc, 0));
-        PUT(FTRP(prev_bp), PACK(GET_SIZE(prev_bp) + GET_SIZE(bp) + GET_SIZE(next_bp), prev_prev_alloc, 0));
+        PUT(HDRP(prev_bp), PACK(prev_size + size + next_size, prev_prev_alloc, 0));
+        PUT(FTRP(prev_bp), PACK(prev_size + size + next_size, prev_prev_alloc, 0));
         add_to_free_list(prev_bp);
+        bp = prev_bp;
     }
     return bp;
 }
@@ -270,7 +282,7 @@ static void *find_fit_first(size_t asize)
         
         HINT: asize 已经计算了块头部的大小
     */
-   for(char *p = free_listp; p != NULL; p = GET_SUCC(p)){
+   for(char *p = free_listp; p != NULL; p = (char *)GET_SUCC(p)){
         if(asize < GET_SIZE(HDRP(p))){
             return p;
         }
@@ -286,17 +298,17 @@ static void* find_fit_best(size_t asize) {
         
         HINT: asize 已经计算了块头部的大小
     */
-   size_t max = 0;
-   char *max_p = NULL;
-   for(char *p = free_listp; p != NULL; p = GET_SUCC(p)){
+   size_t min = __SIZE_MAX__;
+   char *min_p = NULL;
+   for(char *p = free_listp; p != NULL; p = (char *)GET_SUCC(p)){
         if(asize < GET_SIZE(HDRP(p))){
-            if(max < GET_SIZE(HDRP(p)) - asize){
-                max = GET_SIZE(HDRP(p)) - asize;
-                max_p = p;
+            if(min > GET_SIZE(HDRP(p)) - asize){
+                min = GET_SIZE(HDRP(p)) - asize;
+                min_p = p;
             }
         }
    }
-    return max_p;
+    return min_p;
 }
 
 static void place(void *bp, size_t asize)
@@ -318,7 +330,8 @@ static void place(void *bp, size_t asize)
     if(block_size - asize > MIN_BLK_SIZE){
         PUT(HDRP(bp), PACK(asize, prev_alloc, 1));
 
-        user_malloc_size += asize - 2;
+        user_malloc_size += asize - 2 * WSIZE;
+        //printf("\n user_size: %u\n", user_malloc_size);
 
         delete_from_free_list(bp);
         p = bp + asize;
@@ -329,7 +342,8 @@ static void place(void *bp, size_t asize)
     else{
         PUT(HDRP(bp), PACK_ALLOC(GET(HDRP(bp)), 1));
         
-        user_malloc_size += block_size - 2;
+        user_malloc_size += block_size - 2 * WSIZE;
+        //printf("\n user_size: %u\n", user_malloc_size);
 
         delete_from_free_list(bp);
         head_next_bp = HDRP(NEXT_BLKP(bp));
