@@ -43,7 +43,7 @@ MODULE_DESCRIPTION("KTEST!");
 MODULE_VERSION("1.0");
 
 // 定义要输出的文件
-#define OUTPUT_FILE "/home/yll/lab3/part2/expr_result.txt"
+#define OUTPUT_FILE "/home/archer/oslab/lab3/meminfolab/expr_result.txt"
 struct file *log_file = NULL;
 char str_buf[64];    //暂存数据
 char buf[PAGE_SIZE]; //全局变量，用来缓存要写入到文件中的内容
@@ -55,9 +55,9 @@ typedef typeof(follow_page) *my_follow_page;
 // typedef typeof(follow_page_mask) *my_follow_page_mask;
 
 // sudo cat /proc/kallsyms | grep page_referenced
-static my_page_referenced mpage_referenced = (my_page_referenced)0xffffffffa06b0780;
+static my_page_referenced mpage_referenced = (my_page_referenced)0xffffffff812bb910;
 // sudo cat /proc/kallsyms | grep follow_page
-static my_follow_page mfollow_page = (my_follow_page)0xffffffffa0694160;
+static my_follow_page mfollow_page = (my_follow_page)0xffffffff812a0e10;
 // follow_page在具体实现时会调用follow_page_mask函数。
 // 在不同的内核版本中，follow_page不一定可以被访问。
 // 经测试发现，在Linux 4.9.263中，无法使用follow_page函数，但是可以使用follow_page_mask
@@ -180,23 +180,69 @@ static void scan_vma(void)
 static void print_mm_active_info(void)
 {
     printk("func == 2, %s\n", __func__);
-    // TODO: 1. 遍历VMA，并根据VMA的虚拟地址得到对应的struct page结构体（使用mfollow_page函数）
-    // struct page *page = mfollow_page(vma, virt_addr, FOLL_GET);
-    // unsigned int unused_page_mask;
-    // struct page *page = mfollow_page_mask(vma, virt_addr, FOLL_GET, &unused_page_mask);
-    // TODO: 2. 使用page_referenced活跃页面是否被访问，并将被访问的页面物理地址写到文件中
-    // kernel v5.13.0-40及之后可尝试
-    // unsigned long vm_flags;
-    // int freq = mpage_referenced(page, 0, (struct mem_cgroup *)(page->memcg_data), &vm_flags);
-    // kernel v5.9.0
-    // unsigned long vm_flags;
-    // int freq = mpage_referenced(page, 0, page->mem_cgroup, &vm_flags);
+    struct mm_struct *mm = get_task_mm(my_task_info.task);
+    if(mm){
+        unsigned long virt_addr;
+        unsigned long phys_addr;
+        // FIXME: 1. 遍历VMA，并根据VMA的虚拟地址得到对应的struct page结构体（使用mfollow_page函数）
+        // 2. 使用page_referenced活跃页面是否被访问，并将被访问的页面物理地址写到文件中
+        struct vm_area_struct *vma;
+        for(vma = mm->mmap; vma; vma = vma->vm_next){
+            for(virt_addr = vma->vm_start; virt_addr < vma->vm_end; virt_addr += PAGE_SIZE){
+                struct page *page = mfollow_page(vma, virt_addr, FOLL_GET);
+                if(!IS_ERR_OR_NULL(page)){
+                    unsigned long vm_flags;
+                    int freq = mpage_referenced(page, 0, (struct mem_cgroup *)(page->memcg_data), &vm_flags);
+                    if(freq > 0){
+                        phys_addr = page_to_phys(page);
+                        struct file *fp = filp_open(OUTPUT_FILE, O_WRONLY | O_APPEND | O_CREAT, 0644);
+                        if(IS_ERR(fp)){
+                            printk("failed opening %s", OUTPUT_FILE);
+                        }
+                        else{
+                            record_one_data(phys_addr);
+                            kernel_write(fp, buf, strlen(buf), &fp->fpos);
+                            filp_close(fp, NULL);
+                        }
+                    }
+                    put_page(page);//?
+                }
+            }
+        }
+        mmput(mm);
+    }
 }
 
 static unsigned long virt2phys(struct mm_struct *mm, unsigned long virt)
 {
     struct page *page = NULL;
-    // TODO: 多级页表遍历：pgd->pud->pmd->pte，然后从pte到page，最后得到pfn
+    // FIXME: 多级页表遍历：pgd->pud->pmd->pte，然后从pte到page，最后得到pfn
+    unsigned long pgd = pgd_index(virt);
+    unsigned long pud = pud_index(virt);
+    unsigned long pmd = pmd_index(virt);
+    unsigned long pte = pte_index(virt);
+
+    pgd_t *pgd = pgd_offset(mm, virt);
+    if (pgd_none(*pgd) || pgd_bad(*pgd)){
+        pr_err("func: %s pgd is invalid\n", __func__);
+        return NULL;
+    }
+    pud_t *pud = pud_offset((p4d_t *)pgd, virt);//FIXME:
+    if (pud_none(*pgd) || pud_bad(*pgd)){
+        pr_err("func: %s pud is invalid\n", __func__);
+        return NULL;
+    }
+    pmd_t *pmd = pmd_offset(pud, virt);
+    if (pmd_none(*pmd) || pmd_bad(*pmd)){
+        pr_err("func: %s pmd is invalid\n", __func__);
+        return NULL;
+    }
+    pte_t *pte = pte_offset_kernel(pmd, virt);
+    if (pte_none(*pte) || !pte_present(*pte)){
+        pr_err("func: %s pte is invalid\n", __func__);
+        return NULL;
+    }
+    page = pte_page(*pte);
     if (page)
     {
         return page_to_pfn(page);
@@ -215,8 +261,21 @@ static void traverse_page_table(struct task_struct *task)
     struct mm_struct *mm = get_task_mm(my_task_info.task);
     if (mm)
     {
-        // TODO:遍历VMA，并以PAGE_SIZE为粒度逐个遍历VMA中的虚拟地址，然后进行页表遍历
-        // record_two_data(virt_addr, virt2phys(task->mm, virt_addr));
+        // FIXME:遍历VMA，并以PAGE_SIZE为粒度逐个遍历VMA中的虚拟地址，然后进行页表遍历
+        struct vm_area_struct *vma;
+        for(vma = mm->mmap; vma; vma = vma->vm_next){
+            for(unsigned long virt_addr = vma->vm_start; virt_addr < vma->vm_end; virt_addr += PAGE_SIZE){
+                struct file *fp = filp_open(OUTPUT_FILE, O_WRONLY | O_APPEND | O_CREAT, 0644);
+                if(IS_ERR(fp)){
+                    printk("failed opening %s", OUTPUT_FILE);
+                }
+                else{
+                    record_two_data(virt_addr, virt2phys(task->mm, virt_addr));
+                    kernel_write(fp, buf, strlen(buf), &fp->fpos);
+                    filp_close(fp, NULL);
+                }
+            }
+        }
         mmput(mm);
     }
     else
@@ -228,8 +287,18 @@ static void traverse_page_table(struct task_struct *task)
 // func == 4 或者 func == 5
 static void print_seg_info(void)
 {
+    // FIXME:根据数据段或者代码段的起始地址和终止地址得到其中的页面，然后打印页面内容到文件中
+    // 相关提示：可以使用follow_page函数得到虚拟地址对应的page，然后使用addr=kmap_atomic(page)得到可以直接
+    //          访问的虚拟地址，然后就可以使用memcpy函数将数据段或代码段拷贝到全局变量buf中以写入到文件中
+    //          注意：使用kmap_atomic(page)结束后还需要使用kunmap_atomic(addr)来进行释放操作
+    //          正确结果：如果是运行实验提供的workload，这一部分数据段应该会打印出char *trace_data，
+    //                   static char global_data[100]和char hamlet_scene1[8276]的内容。
     struct mm_struct *mm;
     unsigned long addr;
+    struct vm_area_struct *vma;
+    struct page *page;
+    void *kaddr;
+    int len;
     printk("func == 4 or func == 5, %s\n", __func__);
     mm = get_task_mm(my_task_info.task);
     if (mm == NULL)
@@ -237,12 +306,47 @@ static void print_seg_info(void)
         pr_err("mm_struct is NULL\n");
         return;
     }
-    // TODO: 根据数据段或者代码段的起始地址和终止地址得到其中的页面，然后打印页面内容到文件中
-    // 相关提示：可以使用follow_page函数得到虚拟地址对应的page，然后使用addr=kmap_atomic(page)得到可以直接
-    //          访问的虚拟地址，然后就可以使用memcpy函数将数据段或代码段拷贝到全局变量buf中以写入到文件中
-    //          注意：使用kmap_atomic(page)结束后还需要使用kunmap_atomic(addr)来进行释放操作
-    //          正确结果：如果是运行实验提供的workload，这一部分数据段应该会打印出char *trace_data，
-    //                   static char global_data[100]和char hamlet_scene1[8276]的内容。
+    struct file *fp = filp_open(OUTPUT_FILE, O_WRONLY | O_APPEND | O_CREAT, 0644);
+    if(IS_ERR(fp)){
+        printk("failed opening %s", OUTPUT_FILE);
+    }
+
+    unsigned long start = mm->start_data;
+    unsigned long end = mm->end_data;
+
+    vma = find_vma(mm, start);
+    for(addr = start; addr < end; addr += PAGE_SIZE){
+        if(addr >= vma->vm_end){//如果段跨越多个VMA
+            kunmap_atomic(kaddr);
+            put_page(page);
+            vma = vma->vm_next;
+        }
+        else{
+            if(!vma){
+                pr_err("vma is NULL\n");
+                break;
+            }
+            page = follow_page(vma, addr, FOLL_GET);
+            if(IS_ERR_OR_NULL(page)){
+                pr_err("page is NULL\n");
+                break;
+            }
+            kaddr = kmap_atomic(page);//可访问的
+            if (!kaddr){
+                pr_err("kaddr is NULL\n");
+                put_page(page);
+                break;
+            }
+            len = (PAGE_SIZE < end - addr)? PAGE_SIZE: (end - addr);
+            memcpy(buf, kaddr + (addr & ~PAGE_MASK), len);
+            //addr未必页面对齐，而kaddr指向page的物理页面基址
+            //所以这里对addr执行掩码（仅保留低12位）后作为偏移量与kaddr相加得到正确的物理地址
+            kernel_write(fp, buf, strlen(buf), &fp->fpos);
+            kunmap_atomic(kaddr);
+            put_page(page);
+        }
+    }
+    filp_close(fp, NULL);
     mmput(mm);
 }
 
