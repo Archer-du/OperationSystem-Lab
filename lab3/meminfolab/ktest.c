@@ -195,21 +195,14 @@ static void print_mm_active_info(void)
                     int freq = mpage_referenced(page, 0, (struct mem_cgroup *)(page->memcg_data), &vm_flags);
                     if(freq > 0){
                         phys_addr = page_to_phys(page);
-                        struct file *fp = filp_open(OUTPUT_FILE, O_WRONLY | O_APPEND | O_CREAT, 0644);
-                        if(IS_ERR(fp)){
-                            printk("failed opening %s", OUTPUT_FILE);
-                        }
-                        else{
-                            record_one_data(phys_addr);
-                            kernel_write(fp, buf, strlen(buf), &fp->fpos);
-                            filp_close(fp, NULL);
-                        }
+                        record_one_data(phys_addr);
                     }
-                    put_page(page);//?
+                    put_page(page);
                 }
             }
         }
         mmput(mm);
+        flush_buf(1);
     }
 }
 
@@ -217,18 +210,13 @@ static unsigned long virt2phys(struct mm_struct *mm, unsigned long virt)
 {
     struct page *page = NULL;
     // FIXME: 多级页表遍历：pgd->pud->pmd->pte，然后从pte到page，最后得到pfn
-    unsigned long pgd = pgd_index(virt);
-    unsigned long pud = pud_index(virt);
-    unsigned long pmd = pmd_index(virt);
-    unsigned long pte = pte_index(virt);
-
     pgd_t *pgd = pgd_offset(mm, virt);
     if (pgd_none(*pgd) || pgd_bad(*pgd)){
         pr_err("func: %s pgd is invalid\n", __func__);
         return NULL;
     }
-    pud_t *pud = pud_offset((p4d_t *)pgd, virt);//FIXME:
-    if (pud_none(*pgd) || pud_bad(*pgd)){
+    pud_t *pud = pud_offset((p4d_t *)pgd, virt);
+    if (pud_none(*pud) || pud_bad(*pud)){
         pr_err("func: %s pud is invalid\n", __func__);
         return NULL;
     }
@@ -263,20 +251,14 @@ static void traverse_page_table(struct task_struct *task)
     {
         // FIXME:遍历VMA，并以PAGE_SIZE为粒度逐个遍历VMA中的虚拟地址，然后进行页表遍历
         struct vm_area_struct *vma;
+        unsigned long virt_addr;
         for(vma = mm->mmap; vma; vma = vma->vm_next){
-            for(unsigned long virt_addr = vma->vm_start; virt_addr < vma->vm_end; virt_addr += PAGE_SIZE){
-                struct file *fp = filp_open(OUTPUT_FILE, O_WRONLY | O_APPEND | O_CREAT, 0644);
-                if(IS_ERR(fp)){
-                    printk("failed opening %s", OUTPUT_FILE);
-                }
-                else{
-                    record_two_data(virt_addr, virt2phys(task->mm, virt_addr));
-                    kernel_write(fp, buf, strlen(buf), &fp->fpos);
-                    filp_close(fp, NULL);
-                }
+            for(virt_addr = vma->vm_start; virt_addr < vma->vm_end; virt_addr += PAGE_SIZE){
+                record_two_data(virt_addr, virt2phys(task->mm, virt_addr));
             }
         }
         mmput(mm);
+        flush_buf(1);
     }
     else
     {
@@ -290,15 +272,16 @@ static void print_seg_info(void)
     // FIXME:根据数据段或者代码段的起始地址和终止地址得到其中的页面，然后打印页面内容到文件中
     // 相关提示：可以使用follow_page函数得到虚拟地址对应的page，然后使用addr=kmap_atomic(page)得到可以直接
     //          访问的虚拟地址，然后就可以使用memcpy函数将数据段或代码段拷贝到全局变量buf中以写入到文件中
-    //          注意：使用kmap_atomic(page)结束后还需要使用kunmap_atomic(addr)来进行释放操作
+    //          注意：使用kmap_atomic(page)结束后还需要使用kunmap_atomic(virt_addr)来进行释放操作
     //          正确结果：如果是运行实验提供的workload，这一部分数据段应该会打印出char *trace_data，
     //                   static char global_data[100]和char hamlet_scene1[8276]的内容。
     struct mm_struct *mm;
-    unsigned long addr;
+    unsigned long virt_addr;
     struct vm_area_struct *vma;
     struct page *page;
     void *kaddr;
-    int len;
+    unsigned long start;
+    unsigned long end;
     printk("func == 4 or func == 5, %s\n", __func__);
     mm = get_task_mm(my_task_info.task);
     if (mm == NULL)
@@ -306,47 +289,45 @@ static void print_seg_info(void)
         pr_err("mm_struct is NULL\n");
         return;
     }
-    struct file *fp = filp_open(OUTPUT_FILE, O_WRONLY | O_APPEND | O_CREAT, 0644);
-    if(IS_ERR(fp)){
-        printk("failed opening %s", OUTPUT_FILE);
+
+    if(ktest_func == 4){
+        start = mm->start_data;
+        end = mm->end_data;
     }
-
-    unsigned long start = mm->start_data;
-    unsigned long end = mm->end_data;
-
-    vma = find_vma(mm, start);
-    for(addr = start; addr < end; addr += PAGE_SIZE){
-        if(addr >= vma->vm_end){//如果段跨越多个VMA
-            kunmap_atomic(kaddr);
-            put_page(page);
-            vma = vma->vm_next;
-        }
-        else{
-            if(!vma){
-                pr_err("vma is NULL\n");
-                break;
-            }
-            page = follow_page(vma, addr, FOLL_GET);
-            if(IS_ERR_OR_NULL(page)){
-                pr_err("page is NULL\n");
-                break;
-            }
-            kaddr = kmap_atomic(page);//可访问的
-            if (!kaddr){
-                pr_err("kaddr is NULL\n");
+    else{
+        start = mm->start_code;
+        end = mm->end_code;
+    }
+    //返回距离start最近并且结束地址大于start的VMA
+    for(vma = mm->mmap; vma; vma = vma->vm_next){
+        for(virt_addr = vma->vm_start; virt_addr < vma->vm_end; virt_addr += PAGE_SIZE){
+            page = mfollow_page(vma, virt_addr, FOLL_GET);
+            if(!IS_ERR_OR_NULL(page)){
+                kaddr = kmap_atomic(page);
+                if(virt_addr <= start && virt_addr + PAGE_SIZE >= start){
+                    memcpy(buf, kaddr + (start - virt_addr), virt_addr + PAGE_SIZE - start);
+                    //kaddr指向page的物理页面基址，start - addr作为12位偏移量与kaddr相加得到正确的物理地址
+                    write_to_file(buf, virt_addr + PAGE_SIZE - start);
+                    //printk("write to file sol 1.\n");
+                }
+                if(virt_addr >= start && virt_addr + PAGE_SIZE <= end){
+                    memcpy(buf, kaddr, PAGE_SIZE);
+                    write_to_file(buf, PAGE_SIZE);
+                    //printk("write to file sol 2.\n");
+                }
+                if(virt_addr <= end && virt_addr + PAGE_SIZE >= end){
+                    memcpy(buf, kaddr, end - virt_addr);
+                    write_to_file(buf, end - virt_addr);
+                    //printk("write to file sol 3.\n");
+                }
+                kunmap_atomic(kaddr);
                 put_page(page);
-                break;
             }
-            len = (PAGE_SIZE < end - addr)? PAGE_SIZE: (end - addr);
-            memcpy(buf, kaddr + (addr & ~PAGE_MASK), len);
-            //addr未必页面对齐，而kaddr指向page的物理页面基址
-            //所以这里对addr执行掩码（仅保留低12位）后作为偏移量与kaddr相加得到正确的物理地址
-            kernel_write(fp, buf, strlen(buf), &fp->fpos);
-            kunmap_atomic(kaddr);
-            put_page(page);
+            else{
+                //printk("invalid page!\n");
+            }
         }
     }
-    filp_close(fp, NULL);
     mmput(mm);
 }
 
