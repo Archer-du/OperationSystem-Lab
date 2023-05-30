@@ -1,7 +1,7 @@
 #! /bin/bash
 
 TASKPATH=$PWD
-MALLOCPATH=~/oslab/lab3/malloclab/
+MALLOCPATH=~/oslab/lab3_part1/malloclab/
 export LD_LIBRARY_PATH=$MALLOCPATH
 cd $MALLOCPATH; make clean; make
 cd $TASKPATH

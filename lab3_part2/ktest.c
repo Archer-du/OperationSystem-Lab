@@ -227,7 +227,7 @@ static unsigned long virt2phys(struct mm_struct *mm, unsigned long virt)
     }
     pte_t *pte = pte_offset_kernel(pmd, virt);
     if (pte_none(*pte) || !pte_present(*pte)){
-        pr_err("func: %s pte is invalid\n", __func__);
+        printk("func: %s pte is invalid\n", __func__);
         return NULL;
     }
     page = pte_page(*pte);
@@ -254,11 +254,13 @@ static void traverse_page_table(struct task_struct *task)
         unsigned long virt_addr;
         for(vma = mm->mmap; vma; vma = vma->vm_next){
             for(virt_addr = vma->vm_start; virt_addr < vma->vm_end; virt_addr += PAGE_SIZE){
-                record_two_data(virt_addr, virt2phys(task->mm, virt_addr));
+                if(virt2phys(task->mm, virt_addr)){
+                  record_two_data(virt_addr, virt2phys(task->mm, virt_addr));
+                }
             }
         }
         mmput(mm);
-        flush_buf(1);
+        flush_buf(0);
     }
     else
     {
@@ -299,7 +301,7 @@ static void print_seg_info(void)
         end = mm->end_code;
     }
     //返回距离start最近并且结束地址大于start的VMA
-    for(vma = mm->mmap; vma; vma = vma->vm_next){
+    for(vma = find_vma(mm, start); vma; vma = vma->vm_next){
         for(virt_addr = vma->vm_start; virt_addr < vma->vm_end; virt_addr += PAGE_SIZE){
             page = mfollow_page(vma, virt_addr, FOLL_GET);
             if(!IS_ERR_OR_NULL(page)){
@@ -308,23 +310,17 @@ static void print_seg_info(void)
                     memcpy(buf, kaddr + (start - virt_addr), virt_addr + PAGE_SIZE - start);
                     //kaddr指向page的物理页面基址，start - addr作为12位偏移量与kaddr相加得到正确的物理地址
                     write_to_file(buf, virt_addr + PAGE_SIZE - start);
-                    //printk("write to file sol 1.\n");
                 }
                 if(virt_addr >= start && virt_addr + PAGE_SIZE <= end){
                     memcpy(buf, kaddr, PAGE_SIZE);
                     write_to_file(buf, PAGE_SIZE);
-                    //printk("write to file sol 2.\n");
                 }
                 if(virt_addr <= end && virt_addr + PAGE_SIZE >= end){
                     memcpy(buf, kaddr, end - virt_addr);
                     write_to_file(buf, end - virt_addr);
-                    //printk("write to file sol 3.\n");
                 }
                 kunmap_atomic(kaddr);
                 put_page(page);
-            }
-            else{
-                //printk("invalid page!\n");
             }
         }
     }

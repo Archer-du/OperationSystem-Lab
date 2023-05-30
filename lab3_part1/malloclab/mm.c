@@ -97,7 +97,7 @@ int mm_init(void)
     if ((heap_listp = mem_sbrk(4 * WSIZE)) == (void *)-1)
         return -1;
     
-    heap_size += 4 * WSIZE;//
+    heap_size += 4 * WSIZE;
 
     PUT(heap_listp, 0);
     PUT(heap_listp + (1 * WSIZE), PACK(DSIZE, 1, 1));
@@ -167,7 +167,6 @@ void mm_free(void *bp)
     coalesce(bp);
 
     user_malloc_size -= size - 2 * WSIZE;
-    //printf("\n user_size: %u\n", user_malloc_size);
 
 }
 
@@ -205,8 +204,7 @@ static void *extend_heap(size_t words)
     if ((long)(bp = mem_sbrk(size)) == -1)
         return NULL;
     
-    heap_size += size;//
-    //printf("\nheap_size: %u\n", heap_size);
+    heap_size += size;
 
     PUT(HDRP(bp), PACK(size, prev_alloc, 0)); /*last free block*/
     PUT(FTRP(bp), PACK(size, prev_alloc, 0));//块size包括块头块尾
@@ -302,7 +300,7 @@ static void* find_fit_best(size_t asize) {
    char *min_p = NULL;
    for(char *p = free_listp; p != NULL; p = (char *)GET_SUCC(p)){
         if(asize < GET_SIZE(HDRP(p))){
-            if(min > GET_SIZE(HDRP(p)) - asize){
+            if(min > GET_SIZE(HDRP(p)) - asize){// 当前块的剩余大小更小，则更新最适块信息
                 min = GET_SIZE(HDRP(p)) - asize;
                 min_p = p;
             }
@@ -331,7 +329,6 @@ static void place(void *bp, size_t asize)
         PUT(HDRP(bp), PACK(asize, prev_alloc, 1));
 
         user_malloc_size += asize - 2 * WSIZE;
-        //printf("\n user_size: %u\n", user_malloc_size);
 
         delete_from_free_list(bp);
         p = bp + asize;
@@ -343,7 +340,6 @@ static void place(void *bp, size_t asize)
         PUT(HDRP(bp), PACK_ALLOC(GET(HDRP(bp)), 1));
         
         user_malloc_size += block_size - 2 * WSIZE;
-        //printf("\n user_size: %u\n", user_malloc_size);
 
         delete_from_free_list(bp);
         head_next_bp = HDRP(NEXT_BLKP(bp));
