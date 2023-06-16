@@ -1,5 +1,6 @@
 #include <ctype.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <string.h>
 #include <time.h>
 #include <assert.h>
@@ -696,7 +697,7 @@ int fat16_read(const char *path, char *buffer, size_t size, off_t offset,
     // TODO:1.6: clus 初始为该文件第一个簇，利用 read_from_cluster_at_offset 函数，从正确的簇中读取数据。
     // Hint: 需要注意 offset 的位置，和结束读取的位置。要读取的数据可能横跨多个簇，也可能就在一个簇的内部。
     // 你可以参考 read_from_cluster_at_offset 里，是怎么处理每个扇区的读取范围的，或者用自己的方式解决这个问题。
-    size_t p = 0;
+    size_t actual_size = 0;
     cluster_t clus = dir->DIR_FstClusLO;
     for(int i = 0; i < offset / meta.cluster_size; i ++) {
         if(is_cluster_inuse(clus)){
@@ -708,13 +709,13 @@ int fat16_read(const char *path, char *buffer, size_t size, off_t offset,
     while(pos < size) {
         if(is_cluster_inuse(clus)){
             size_t len = min(meta.cluster_size - clus_off, size - pos);
-            p += read_from_cluster_at_offset(clus, clus_off, buffer + pos, len);
+            actual_size += read_from_cluster_at_offset(clus, clus_off, buffer + pos, len);
             pos += len;
             clus_off = 0;
             clus = read_fat_entry(clus);
         }
     }
-    return p;
+    return actual_size;
 }
 
 
@@ -996,14 +997,17 @@ int fat16_mkdir(const char *path, mode_t mode) {
     DirEntrySlot slot;
     DirEntrySlot dot_slot;
     DirEntrySlot dotdot_slot;
-    char parent_path[MAX_NAME_LEN];
+    char parent_path[MAX_NAME_LEN] = "";
+    printf("%s\n", parent_path);
     const char* dirname = NULL;
     int ret = find_empty_slot(path, &slot, &dirname);
     if(ret < 0){
         return ret;
     }
     int len = strlen(dirname);
+    printf("%s\n", dirname);
     strncpy(parent_path, path, strlen(path) - len);
+    printf("%s\n", path);
     bool root = path_is_root(parent_path);
     ret = find_entry(parent_path, &dotdot_slot);
     printf("%s\n", parent_path);
@@ -1035,15 +1039,15 @@ int fat16_mkdir(const char *path, mode_t mode) {
     if(ret < 0){
         return ret;
     }
-    cluster_t parent_fir_clus;
     //FIXME
+    cluster_t parent_fir_clus;
     if(root){
         parent_fir_clus = 0;
     }
     else{
         parent_fir_clus = dotdot_slot.dir.DIR_FstClusLO;
     }
-    dot_slot.sector = cluster_first_sector(first_clus);
+    dotdot_slot.sector = cluster_first_sector(first_clus);
     dotdot_slot.offset = DIR_ENTRY_SIZE;
     ret = dir_entry_create(dotdot_slot, DOTDOT_NAME, ATTR_DIRECTORY, parent_fir_clus, meta.cluster_size);
     if(ret < 0){
@@ -1084,7 +1088,7 @@ int fat16_rmdir(const char *path) {
     char sector_buffer[MAX_LOGICAL_SECTOR_SIZE];
     char name[MAX_NAME_LEN];
     sector_read(first_sec, sector_buffer);
-    for(size_t off; off < meta.sector_size; off += DIR_ENTRY_SIZE){
+    for(size_t off = 0; off < meta.sector_size; off += DIR_ENTRY_SIZE){
         DIR_ENTRY* indir = (DIR_ENTRY*)(sector_buffer + off);
         if(is_valid(indir)){
             if(!is_dot(indir)){
@@ -1124,8 +1128,25 @@ ssize_t write_to_cluster_at_offset(cluster_t clus, off_t offset, const char* dat
     assert(offset + size <= meta.cluster_size);  // offset + size 必须小于簇大小
     char sector_buffer[PHYSICAL_SECTOR_SIZE];
 
+    sector_t sec = cluster_first_sector(clus) + offset / meta.sector_size;
+    size_t sec_off = offset % meta.sector_size;
     size_t pos = 0;
     // TODO: 参考注释，以及read_from_cluster_at_offset函数，实现写入簇的功能。
+    while(pos < size) {
+        int ret = sector_read(sec, sector_buffer);
+        if(ret < 0){
+            return ret;
+        }
+        size_t len = min(meta.sector_size - sec_off, size - pos);
+        memcpy(sector_buffer + sec_off, data + pos, len);
+        ret = sector_write(sec, sector_buffer);
+        if(ret < 0){
+            return ret;
+        }
+        pos += len;
+        sec_off = 0;
+        sec ++;
+    }
     return pos;
 }
 
@@ -1139,9 +1160,37 @@ ssize_t write_to_cluster_at_offset(cluster_t clus, off_t offset, const char* dat
 int file_reserve_clusters(DIR_ENTRY* dir, size_t size) {
     // TODO: 为文件分配新的簇至足够容纳size大小
     //   1. 计算需要多少簇
+    size_t init_size = dir->DIR_FileSize;
+    size_t new_clus_num = (size == 0)? 0: size / meta.cluster_size + 1;
+    size_t prev_clus_num = (init_size == 0)? 0: init_size / meta.cluster_size + 1;
+    printf("new_clus_num: %lu\n", new_clus_num);
+    printf("prev_clus_num: %lu\n", prev_clus_num);
+    cluster_t clus = dir->DIR_FstClusLO;
     //   2. 如果文件没有簇，直接分配足够的簇
+    if(dir->DIR_FileSize == 0) {
+        int ret = alloc_clusters(new_clus_num, &(dir->DIR_FstClusLO));
+        if(ret < 0) {
+            return ret;
+        }
+    }
     //   3. 如果文件已有簇，找到最后一个簇（哪个簇是当前该文件的最后一个簇？），并计算需要额外分配多少个簇
-    //   4. 分配额外的簇，并将分配好的簇连在最后一个簇后
+    else {
+        cluster_t clus = dir->DIR_FstClusLO;
+        for(int i = 0; i < prev_clus_num - 1; i ++) {
+            clus = read_fat_entry(clus); 
+        }
+        //   4. 分配额外的簇，并将分配好的簇连在最后一个簇后
+        cluster_t new_clus;
+        int ret = alloc_clusters(new_clus_num - prev_clus_num, &new_clus);
+        if(ret < 0) {
+            return ret;
+        } 
+        ret = write_fat_entry(clus, new_clus);
+        if(ret < 0) {
+            return ret;
+        } 
+    }
+    return 0;
 }
 
 /**
@@ -1158,8 +1207,47 @@ int file_reserve_clusters(DIR_ENTRY* dir, size_t size) {
 int fat16_write(const char *path, const char *data, size_t size, off_t offset,
                 struct fuse_file_info *fi) {
     printf("write(path='%s', offset=%ld, size=%lu)\n", path, offset, size);
-    // TODO: 写文件，请自行实现，将在下周发布进一步说明。
-    return -ENOTSUP;
+    if(path_is_root(path)) {
+        return -EISDIR;
+    }
+    DirEntrySlot slot;
+    DIR_ENTRY* dir = &(slot.dir);
+    int ret = find_entry(path, &slot);
+    if(ret < 0) {
+        return ret;
+    }
+    if(is_directory(dir->DIR_Attr)) {
+        return -EISDIR;
+    }
+    if(offset > dir->DIR_FileSize) {
+        return -EINVAL;
+    }
+    size_t new_size = max(offset + size, dir->DIR_FileSize);
+    ret = file_reserve_clusters(dir, new_size); 
+    if(ret < 0) {
+        return ret;
+    }
+    size_t actual_size = 0;
+    cluster_t clus = dir->DIR_FstClusLO;
+    for(int i = 0; i < offset / meta.cluster_size; i ++) {
+        if(is_cluster_inuse(clus)){
+            clus = read_fat_entry(clus);
+        }
+    }
+    size_t clus_off = offset % meta.cluster_size;
+    size_t pos = 0;
+    while(pos < size) {
+        if(is_cluster_inuse(clus)) {
+            size_t len = min(meta.cluster_size - clus_off, size - pos);
+            actual_size += write_to_cluster_at_offset(clus, clus_off, data + pos, len);
+            pos += len;
+            clus_off = 0;
+            clus = read_fat_entry(clus);
+        }
+    }
+    dir->DIR_FileSize = new_size;
+    dir_entry_write(slot);
+    return actual_size;
 }
 
 /**
@@ -1174,8 +1262,80 @@ int fat16_write(const char *path, const char *data, size_t size, off_t offset,
  */
 int fat16_truncate(const char *path, off_t size, struct fuse_file_info* fi) {
     printf("truncate(path='%s', size=%lu)\n", path, size);
-    // TODO：裁剪文件，请自行实现，将在下周发布说明。
-    return -ENOTSUP;
+    if(path_is_root(path)) {
+        return -EISDIR;
+    }
+    DirEntrySlot slot;
+    DIR_ENTRY* dir = &(slot.dir);
+    int ret = find_entry(path, &slot);
+    if(ret < 0) {
+        return ret;
+    }
+    size_t init_size = dir->DIR_FileSize;
+    size_t new_clus_num = (size == 0)? 0: size / meta.cluster_size + 1;
+    size_t prev_clus_num = (init_size == 0)? 0: init_size / meta.cluster_size + 1;
+    cluster_t clus = dir->DIR_FstClusLO;
+
+    if(new_clus_num < prev_clus_num) {
+        if(new_clus_num == 0) {
+            dir->DIR_FstClusLO = CLUSTER_FREE;
+        }
+        else{
+            for(int i = 0; i < new_clus_num - 1; i ++) {
+                clus = read_fat_entry(clus);
+            }
+        }
+        ret = free_clusters(clus);
+        if(ret < 0) {
+            return ret;
+        } 
+    }
+    else if(new_clus_num > prev_clus_num) {
+        cluster_t new_clus;
+        ret = alloc_clusters(new_clus_num - prev_clus_num, &new_clus);
+        if(ret < 0) {
+            return ret;
+        } 
+        if(prev_clus_num == 0) {
+            dir->DIR_FstClusLO = new_clus;
+        }
+        else{
+            for(int i = 0; i < prev_clus_num - 1; i ++) {
+                if(is_cluster_inuse(clus)){
+                    clus = read_fat_entry(clus);
+                }
+            }
+            ret = write_fat_entry(clus, new_clus);
+            if(ret < 0) {
+                return ret;
+            } 
+        }
+
+        // size_t clus_off = init_size % meta.cluster_size;
+        // size_t set_size = min(meta.cluster_size - clus_off, size - init_size);
+        // char sector_buffer[PHYSICAL_SECTOR_SIZE];
+        // sector_t sec = cluster_first_sector(clus) + clus_off / meta.sector_size;
+        // size_t sec_off = clus_off % meta.sector_size;
+        // size_t pos = 0;
+        // while(pos < set_size) {
+        //     ret = sector_read(sec, sector_buffer);
+        //     if(ret < 0){
+        //         return ret;
+        //     }
+        //     size_t len = min(meta.sector_size - sec_off, set_size - pos);
+        //     memset(sector_buffer + sec_off, 0, len);
+        //     ret = sector_write(sec, sector_buffer);
+        //     if(ret < 0){
+        //         return ret;
+        //     }
+        //     pos += len;
+        //     sec_off = 0;
+        //     sec ++;
+        // }
+    }
+    dir->DIR_FileSize = size;
+    dir_entry_write(slot);
+    return 0;
 }
 
 
