@@ -752,7 +752,6 @@ int dir_entry_create(DirEntrySlot slot, const char *shortname,
     memset(dir, 0, sizeof(DIR_ENTRY));
     
     memcpy(dir, shortname, 11);
-    printf("%s\n", shortname);
     dir->DIR_Attr = attr;
     dir->DIR_FstClusHI = 0;
     dir->DIR_FstClusLO = first_clus;
@@ -839,8 +838,10 @@ int cluster_clear(cluster_t clus) {
  * @return int      成功返回0，失败返回错误代码负值
  */
 int alloc_clusters(size_t n, cluster_t* first_clus) {
-    if (n == 0)
-        return CLUSTER_END;
+    if (n == 0) {
+        *first_clus = CLUSTER_END;
+        return 0;
+    }
 
     // 用于保存找到的n个空闲簇，另外在末尾加上CLUSTER_END，共n+1个簇号
     cluster_t *clusters = malloc((n + 1) * sizeof(cluster_t));
@@ -916,7 +917,7 @@ int fat16_mknod(const char *path, mode_t mode, dev_t dev) {
         return ret;
     }
     // 这里创建文件时首簇号填了0，你可以根据自己需要修改。
-    ret = dir_entry_create(slot, shortname, ATTR_REGULAR, 0, 0);
+    ret = dir_entry_create(slot, shortname, ATTR_REGULAR, CLUSTER_END, 0);
     if(ret < 0) {
         return ret;
     }
@@ -992,27 +993,21 @@ int fat16_mkdir(const char *path, mode_t mode) {
     // Hint: 注意设置的属性不同。
     // Hint: 新目录最开始即有两个目录项，分别是.和..，所以需要给新目录分配一个簇。
     // Hint: 你可以使用 alloc_clusters 来分配簇。
-    printf("%lu\n", meta.cluster_size);
 
     DirEntrySlot slot;
     DirEntrySlot dot_slot;
     DirEntrySlot dotdot_slot;
     char parent_path[MAX_NAME_LEN] = "";
-    printf("%s\n", parent_path);
     const char* dirname = NULL;
     int ret = find_empty_slot(path, &slot, &dirname);
     if(ret < 0){
         return ret;
     }
     int len = strlen(dirname);
-    printf("%s\n", dirname);
     strncpy(parent_path, path, strlen(path) - len);
-    printf("%s\n", path);
     bool root = path_is_root(parent_path);
     ret = find_entry(parent_path, &dotdot_slot);
-    printf("%s\n", parent_path);
     if(ret < 0){
-        printf("parent path error\n");
         return ret;
     }
     //FIXME
@@ -1094,10 +1089,8 @@ int fat16_rmdir(const char *path) {
             if(!is_dot(indir)){
                 return -ENOTEMPTY;
             }
-            else printf("isdot\n");
         }
         else if(is_free(indir)){
-            printf("isfree\n");
             break;
         }
     }
@@ -1163,6 +1156,7 @@ int file_reserve_clusters(DIR_ENTRY* dir, size_t size) {
     size_t init_size = dir->DIR_FileSize;
     size_t new_clus_num = (size == 0)? 0: size / meta.cluster_size + 1;
     size_t prev_clus_num = (init_size == 0)? 0: init_size / meta.cluster_size + 1;
+    printf("file_size: %lu\n", init_size);
     printf("new_clus_num: %lu\n", new_clus_num);
     printf("prev_clus_num: %lu\n", prev_clus_num);
     cluster_t clus = dir->DIR_FstClusLO;
@@ -1175,7 +1169,6 @@ int file_reserve_clusters(DIR_ENTRY* dir, size_t size) {
     }
     //   3. 如果文件已有簇，找到最后一个簇（哪个簇是当前该文件的最后一个簇？），并计算需要额外分配多少个簇
     else {
-        cluster_t clus = dir->DIR_FstClusLO;
         for(int i = 0; i < prev_clus_num - 1; i ++) {
             clus = read_fat_entry(clus); 
         }
@@ -1223,10 +1216,12 @@ int fat16_write(const char *path, const char *data, size_t size, off_t offset,
         return -EINVAL;
     }
     size_t new_size = max(offset + size, dir->DIR_FileSize);
+    printf("new_size: %lu\n", new_size);
     ret = file_reserve_clusters(dir, new_size); 
     if(ret < 0) {
         return ret;
     }
+
     size_t actual_size = 0;
     cluster_t clus = dir->DIR_FstClusLO;
     for(int i = 0; i < offset / meta.cluster_size; i ++) {
@@ -1247,6 +1242,7 @@ int fat16_write(const char *path, const char *data, size_t size, off_t offset,
     }
     dir->DIR_FileSize = new_size;
     dir_entry_write(slot);
+    printf("actual_size: %lu\n", actual_size);
     return actual_size;
 }
 
@@ -1278,7 +1274,7 @@ int fat16_truncate(const char *path, off_t size, struct fuse_file_info* fi) {
 
     if(new_clus_num < prev_clus_num) {
         if(new_clus_num == 0) {
-            dir->DIR_FstClusLO = CLUSTER_FREE;
+            dir->DIR_FstClusLO = CLUSTER_END;
         }
         else{
             for(int i = 0; i < new_clus_num - 1; i ++) {
